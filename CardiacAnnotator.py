@@ -142,7 +142,7 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
 
         # Progress list
         self.landmarkProgressList = qt.QListWidget()
-        self.landmarkProgressList.setMaximumHeight(120)
+        self.landmarkProgressList.setMaximumHeight(130)
         self.landmarkProgressList.setAlternatingRowColors(True)
         progressLayout.addWidget(self.landmarkProgressList)
 
@@ -161,16 +161,6 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
 
         landmarksLayout.addLayout(actionButtonsLayout)
 
-        # Notes section
-        notesLabel = qt.QLabel("Notes:")
-        notesLabel.setStyleSheet("font-weight: bold;")
-        landmarksLayout.addWidget(notesLabel)
-
-        self.notesTextEdit = qt.QTextEdit()
-        self.notesTextEdit.setMaximumHeight(60)
-        self.notesTextEdit.setPlaceholderText("Add notes for current landmark...")
-        landmarksLayout.addWidget(self.notesTextEdit)
-
         # Connect landmark signals
         self.startStopButton.connect('clicked()', self.onStartStopLandmark)
         self.markCompleteButton.connect('clicked()', self.onMarkComplete)
@@ -180,6 +170,18 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
         self.timer = qt.QTimer()
         self.timer.timeout.connect(self.updateTimerDisplay)
         self.current_landmark_active = False
+
+        # =============================================================================
+        # SAVE CASE BUTTON (standalone)
+        # =============================================================================
+
+        self.saveCaseButton = qt.QPushButton("Save Case")
+        self.saveCaseButton.setStyleSheet("QPushButton {  color: white; font-weight: bold; padding: 8px; }")
+        self.saveCaseButton.hide()  # Hidden until case is loaded
+        self.layout.addWidget(self.saveCaseButton)
+
+        # Connect save button
+        self.saveCaseButton.connect('clicked()', self.onSaveCaseClicked)
 
         # For putting it at the top
         self.layout.addStretch(1)
@@ -211,6 +213,7 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
             # Remove "(in progress)" if present
             case_name = display_text.replace(" (in progress)", "")
             print(f"Starting work on: {case_name}")
+            self.logic.widget_reference = self
             self.logic.loadCase(case_name)
             self.activeCaseWidget.setText(case_name)
             self.activeCaseWidget.show()
@@ -244,11 +247,12 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
             activity_name = combo_box.currentText
             self.logic.startActivityTimer(activity_type, activity_name)
             self._logActivity(activity_type, activity_name, "Started")
-
+            
             if activity_type == "landmark":
+                self.logic.lockUnlockLandmark(activity_name, lock=False)  # unlock
                 self.enableLandmarkPlacement(activity_name)
             elif activity_type == "segment":
-            # Different handling for segments
+                # Different handling for segments
                 pass
             
             setattr(self, status_attr, True)
@@ -268,9 +272,12 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
             self._logActivity(activity_type, activity_name, "Stopped")
 
             if activity_type == "landmark":
-                # Disable placement mode
+                # Exit placement mode and return to your module
+                slicer.util.selectModule('CardiacAnnotator')
                 interactionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLInteractionNodeSingleton")
                 interactionNode.SetCurrentInteractionMode(interactionNode.ViewTransform)
+                # Lock landmark to avoid moving it unintentionally
+                self.logic.lockUnlockLandmark(activity_name, lock=True)   # lock
             
             setattr(self, status_attr, False)
             label_widget.setText(f"Current {activity_type.title()}: None")
@@ -318,7 +325,7 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
         """Enable landmark section when a case is loaded"""
         self.landmarkStatusLabel.setText(f"Ready for annotation: {case_name}")
         self.landmarkStatusLabel.setStyleSheet("color: green; font-style: normal; font-weight: bold;")
-        self.startStopButton.setEnabled(True)
+        self.startStopButton.setEnabled(True)        
         self.updateLandmarkProgressList()
 
     def onLandmarkSelectionChanged(self):
@@ -328,23 +335,46 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
             self._logActivity("landmark", self.logic.current_landmark, "Auto-stopped (selection changed)")
 
     def enableLandmarkPlacement(self, landmark_name):
-        # Create or get markups node
+    # Create or get markups node
         if not hasattr(self.logic, 'markups_node') or not self.logic.markups_node:
             self.logic.markups_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsFiducialNode")
             self.logic.markups_node.SetName(f"Landmarks_{self.logic.current_case_name}")
-            
-            # Force scene update
             slicer.app.processEvents()
         
-        # Set active markups node first  
-        selectionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLSelectionNodeSingleton")
-        selectionNode.SetReferenceActivePlaceNodeID(self.logic.markups_node.GetID())
+        # Check if landmark already exists
+        landmark_exists = False
+        if hasattr(self.logic, 'markups_node') and self.logic.markups_node:
+            num_points = self.logic.markups_node.GetNumberOfControlPoints()
+            for i in range(num_points):
+                point_label = self.logic.markups_node.GetNthControlPointLabel(i)
+                if landmark_name in point_label:
+                    landmark_exists = True
+                    break
         
-        # Enable placement mode
-        interactionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLInteractionNodeSingleton")
-        interactionNode.SetCurrentInteractionMode(interactionNode.Place)
-        interactionNode.SetPlaceModePersistence(1)
+        if not landmark_exists:
+            # Enable placement mode for new landmark
+            placeWidget = slicer.qSlicerMarkupsPlaceWidget()
+            placeWidget.setMRMLScene(slicer.mrmlScene)
+            placeWidget.setCurrentNode(self.logic.markups_node)
+            placeWidget.setPlaceModeEnabled(True)
+            self.logic.setupActivityObserver("landmark")
+        # If landmark exists, it's already unlocked for editing by lockUnlockLandmark
 
+    def onSaveCaseClicked(self):
+        """Handle save case button click"""
+        if hasattr(self.logic, 'current_case_name'):
+            case_name = self.logic.current_case_name
+            save_path = os.path.join(self.logic.main_folder, case_name, 'Platipy', f'landmarks_{case_name}.mrk.json')
+            
+            if os.path.exists(save_path):
+                reply = qt.QMessageBox.question(None, "Overwrite Existing", 
+                                            f"Landmarks file already exists for {case_name}. Overwrite?",
+                                            qt.QMessageBox.Yes | qt.QMessageBox.No)
+                if reply != qt.QMessageBox.Yes:
+                    return
+            
+            self.logic.saveLandmarks()
+            qt.QMessageBox.information(None, "Saved", f"Case {case_name} saved successfully!")
 
 class CardiacAnnotatorLogic(ScriptedLoadableModuleLogic):
 
@@ -429,7 +459,25 @@ class CardiacAnnotatorLogic(ScriptedLoadableModuleLogic):
                 
         return pending_cases
    
-    def loadCase(self, case_name): 
+    def loadCase(self, case_name):
+
+        # Check if current work needs saving before switching
+        if hasattr(self, 'markups_node') and self.markups_node and hasattr(self, 'current_case_name'):
+            num_points = self.markups_node.GetNumberOfControlPoints()
+            if num_points > 0:
+                # There are unsaved landmarks - prompt user
+                reply = qt.QMessageBox.question(None, "Unsaved Work", 
+                                            f"You have unsaved landmarks for {self.current_case_name}. Save before switching?",
+                                            qt.QMessageBox.Yes | qt.QMessageBox.No | qt.QMessageBox.Cancel)
+                if reply == qt.QMessageBox.Yes:
+                    self.saveLandmarks()  # We'll need to implement this
+                elif reply == qt.QMessageBox.Cancel:
+                    return  # Don't switch cases
+                # If No, continue without saving
+        
+        # Clear the scene when switching cases
+        slicer.mrmlScene.Clear(0)
+
         # Close previous log if exists
         if hasattr(self, 'current_log_manager') and self.current_log_manager:
             self.current_log_manager.close_case("switched")
@@ -446,13 +494,33 @@ class CardiacAnnotatorLogic(ScriptedLoadableModuleLogic):
 
         # Create markups node for this case if it doesn't exist
         node_name = f"Landmarks_{case_name}"
-        try:
-            self.markups_node = slicer.util.getNode(node_name)
-        except slicer.util.MRMLNodeNotFoundException:
+        save_path = os.path.join(self.main_folder, case_name, 'Platipy', f'landmarks_{case_name}.mrk.json')
+
+        if os.path.exists(save_path):
+            # Load existing landmarks
+            self.markups_node = slicer.util.loadMarkups(save_path)
+            self.markups_node.SetName(node_name)  # Ensure correct name
+            print(f"Loaded existing landmarks from: {save_path}")
+        else:
+            # Create new markups node
             self.markups_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsFiducialNode")
             self.markups_node.SetName(node_name)
-        
+            print(f"Created new landmarks node: {node_name}")
+
         self.current_case_name = case_name
+        self.checkForIncompleteWork() # in case of a previous abrupt exit
+
+        # to change the button back to Start
+        if hasattr(self, 'widget_reference'):
+            self.widget_reference.current_landmark_active = False
+            self.widget_reference.currentLandmarkLabel.setText("Current Landmark: None")
+            self.widget_reference.startStopButton.setText("Start Landmark")
+            self.widget_reference.startStopButton.setStyleSheet("QPushButton { background-color: #4CAF50; color: black; font-weight: bold; }")
+            self.widget_reference.markCompleteButton.setEnabled(False)
+            self.widget_reference.resetLandmarkButton.setEnabled(False)
+        
+        
+        self.widget_reference.saveCaseButton.show() # to show save case button
 
     def updateCaseStatus(self, case_id, status):
         # Find the row for this case
@@ -479,10 +547,119 @@ class CardiacAnnotatorLogic(ScriptedLoadableModuleLogic):
         # Add reset logic here
         if hasattr(self, 'current_log_manager') and self.current_log_manager:
             self.current_log_manager.write_entry(f"Reset landmark: {self.current_landmark}")
-
+   
     def getLandmarkProgress(self):
-        # Return progress dictionary for display
-        return {"Sample": "In Progress"}  # Replace with actual progress tracking
+        """Return progress dictionary with compact status for each landmark type"""
+        landmark_types = [
+            "Left Coronary Cusp Nadir",
+            "Right Coronary Cusp Nadir", 
+            "Non Coronary Cusp Nadir",
+            "Right-Left Commissure",
+            "Right-Non Commissure",
+            "Left-Non Commissure",
+            "Left Coronary Ostium Base",
+            "Right Coronary Ostium Base",
+            "Annulus Contour (Spline)"
+        ]
+        
+        progress = {}
+        
+        # Check which landmarks have been placed
+        if hasattr(self, 'markups_node') and self.markups_node:
+            placed_landmarks = []
+            num_points = self.markups_node.GetNumberOfControlPoints()
+            for i in range(num_points):
+                point_label = self.markups_node.GetNthControlPointLabel(i)
+                placed_landmarks.append(point_label)
+            
+            # Set status for each landmark type
+            for landmark in landmark_types:
+                if landmark in placed_landmarks:
+                    progress[landmark] = "✓"
+                else:
+                    progress[landmark] = "✗"
+        else:
+            # No markups node - all not placed
+            for landmark in landmark_types:
+                progress[landmark] = "✗"
+        
+        return progress
+
+    def setupActivityObserver(self, activity_type):
+        """Set up observer to detect when activities (landmarks/segments) are placed"""
+        if hasattr(self, 'markups_node') and self.markups_node:
+            # Remove existing observer if any
+            if hasattr(self, 'observer_tag'):
+                self.markups_node.RemoveObserver(self.observer_tag)
+            
+            # Add observer for point additions
+            self.observer_tag = self.markups_node.AddObserver(
+                self.markups_node.PointPositionDefinedEvent, 
+                lambda caller, event: self.onActivityPlaced(caller, event, activity_type)
+            )
+
+    def onActivityPlaced(self, caller, event, activity_type):
+        """Called when an activity (landmark/segment) is placed"""
+        num_points = self.markups_node.GetNumberOfControlPoints()
+        if num_points > 0:
+            # Get the last placed point
+            point_index = num_points - 1
+            pos = [0, 0, 0]
+            self.markups_node.GetNthControlPointPosition(point_index, pos)
+            
+            # Set the point label to match the landmark name
+            if activity_type == "landmark":
+                activity_name = getattr(self, f'current_{activity_type}', 'Unknown')
+                self.markups_node.SetNthControlPointLabel(point_index, activity_name)
+            
+            # Log the placement
+            if hasattr(self, 'current_log_manager') and self.current_log_manager:
+                activity_name = getattr(self, f'current_{activity_type}', 'Unknown')
+                self.current_log_manager.write_entry(
+                    f"Placed {activity_type}: {activity_name} at position ({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f})"
+                )          
+
+    def lockUnlockLandmark(self, landmark_name, lock=True):
+        """Lock or unlock points of the current landmark type"""
+        if hasattr(self, 'markups_node') and self.markups_node:
+            num_points = self.markups_node.GetNumberOfControlPoints()
+            for i in range(num_points):
+                point_label = self.markups_node.GetNthControlPointLabel(i)
+                if landmark_name in point_label:
+                    self.markups_node.SetNthControlPointLocked(i, lock)
+
+    def checkForIncompleteWork(self):
+        """Check if there was incomplete work and warn user"""
+        if hasattr(self, 'markups_node') and self.markups_node:
+            num_points = self.markups_node.GetNumberOfControlPoints()
+            unlocked_points = []
+            
+            for i in range(num_points):
+                if not self.markups_node.GetNthControlPointLocked(i):
+                    point_label = self.markups_node.GetNthControlPointLabel(i)
+                    unlocked_points.append(point_label)
+            
+            if unlocked_points:
+                landmark_list = ", ".join(unlocked_points)
+                qt.QMessageBox.warning(None, "Incomplete Work Detected", 
+                                    f"Warning: Found unlocked landmarks from previous session:\n{landmark_list}\n\nPlease review and complete or reset these landmarks.")
+                
+                # Log the warning
+                if hasattr(self, 'current_log_manager') and self.current_log_manager:
+                    self.current_log_manager.write_entry(f"Warning: Incomplete work detected for landmarks: {landmark_list}")
+
+    def saveLandmarks(self):
+        """Save current landmarks to file"""
+        if hasattr(self, 'markups_node') and self.markups_node and hasattr(self, 'current_case_name'):
+            # Save to the case's Platipy folder
+            save_path = os.path.join(self.main_folder, self.current_case_name, 'Platipy', f'landmarks_{self.current_case_name}.mrk.json')
+            slicer.util.saveNode(self.markups_node, save_path)
+            
+            # Log the save
+            if hasattr(self, 'current_log_manager') and self.current_log_manager:
+                self.current_log_manager.write_entry(f"Saved landmarks to {save_path}")
+            
+            print(f"Landmarks saved to: {save_path}")
 
 
     class LogManager:
