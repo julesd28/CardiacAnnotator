@@ -17,7 +17,6 @@ class CardiacAnnotator(ScriptedLoadableModule):
         self.parent.icon = qt.QIcon(iconPath)
 
 class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):   
- 
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
         self.logic = CardiacAnnotatorLogic()
@@ -76,8 +75,8 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
         # Connect signals
         self.selectCaseButton.connect('clicked()', self.onSelectCase)
         self.loadCasesButton.connect('clicked()', self.onLoadCasesClicked)
+        self.caseListWidget.itemActivated.connect(self.onCaseListItemActivated)
         
-   
         # =============================================================================
         # LANDMARKS MARKING SECTION
         # =============================================================================
@@ -95,11 +94,10 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
         # Landmark selection
         landmarkSelectionLayout = qt.QHBoxLayout()
 
-        # Start/Stop landmark button
-        self.startStopButton = qt.QPushButton("Start Landmark")
-        self.startStopButton.setStyleSheet("QPushButton { background-color: #4CAF50; color: black; font-weight: bold; }")
-        self.startStopButton.setEnabled(False)  # Disabled until case is loaded
-        landmarkSelectionLayout.addWidget(self.startStopButton)
+        # Lock/Unlock button
+        self.lockUnlockButton = qt.QPushButton("")
+        self.lockUnlockButton.setEnabled(False)
+        landmarkSelectionLayout.addWidget(self.lockUnlockButton)
 
         landmarksLayout.addLayout(landmarkSelectionLayout)
 
@@ -136,7 +134,7 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
         landmarksLayout.addLayout(actionButtonsLayout)
 
         # Connect landmark signals
-        self.startStopButton.connect('clicked()', self.onStartStopLandmark)
+        self.lockUnlockButton.connect('clicked()', self.onLockUnlockClicked)
         self.markCompleteButton.connect('clicked()', self.onMarkComplete)
         self.resetLandmarkButton.connect('clicked()', self.onResetLandmark)
 
@@ -212,81 +210,29 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
         if hasattr(self.logic, 'current_log_manager') and self.logic.current_log_manager:
             self.logic.current_log_manager.write_entry(f"{action} {activity_type}: {name}")
 
-    def _onStartStopActivity(self, activity_type, combo_box, status_attr, label_widget, button_widget, complete_button, reset_button):
-        """Shared start/stop method for landmarks and segments"""
-        if not getattr(self, status_attr):
-            # Start activity
-            activity_name = combo_box.currentText
-            self.logic.startActivityTimer(activity_type, activity_name)
-            self._logActivity(activity_type, activity_name, "Started")
-            
-            if activity_type == "landmark":
-                self.logic.lockUnlockLandmark(activity_name, lock=False)  # unlock
-                self.enableLandmarkPlacement(activity_name)
-            elif activity_type == "segment":
-                # Different handling for segments
-                pass
-            
-            setattr(self, status_attr, True)
-            button_widget.setText(f"Stop {activity_type.title()}")
-            button_widget.setStyleSheet("QPushButton { background-color: #f44336; color: #000000; font-weight: bold; }")
-            complete_button.setEnabled(True)
-            reset_button.setEnabled(True)
-            
-            # Update progress list
-            getattr(self, f'update{activity_type.title()}ProgressList')()
-            
-        else:
-            # Stop activity
-            activity_name = getattr(self.logic, f'current_{activity_type}')
-            self.logic.stopActivityTimer(activity_type)
-            self._logActivity(activity_type, activity_name, "Stopped")
-
-            if activity_type == "landmark":
-                # Exit placement mode and return to your module
-                slicer.util.selectModule('CardiacAnnotator')
-                interactionNode = slicer.mrmlScene.GetNodeByID("vtkMRMLInteractionNodeSingleton")
-                interactionNode.SetCurrentInteractionMode(interactionNode.ViewTransform)
-                # Lock landmark to avoid moving it unintentionally
-                self.logic.lockUnlockLandmark(activity_name, lock=True)   # lock
-            
-            setattr(self, status_attr, False)
-            button_widget.setText(f"Start {activity_type.title()}")
-            button_widget.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }")
-            complete_button.setEnabled(False)
-            reset_button.setEnabled(False)
-
-    def onStartStopLandmark(self):
-        # Get selected landmark or default
-        landmark_name = getattr(self, 'selected_landmark', 'Left Coronary Cusp Nadir')
-        
-        # Create a fake combo box object that just returns the selected landmark
-        class FakeLandmarkSelector:
-            def __init__(self, landmark):
-                self.currentText = landmark
-        
-        fake_combo = FakeLandmarkSelector(landmark_name)
-        
-        self._onStartStopActivity("landmark", fake_combo, "current_landmark_active", 
-                                self.currentLandmarkLabel, self.startStopButton,
-                                self.markCompleteButton, self.resetLandmarkButton)
-
     def onMarkComplete(self):
-        if self.current_landmark_active:
-            landmark_name = getattr(self, 'selected_landmark', 'Left Coronary Cusp Nadir')
-            self.logic.completeLandmark(landmark_name, "")  # Remove notesTextEdit reference for now
-            self.onStartStopLandmark()  # Stop current landmark
+        if hasattr(self, 'selected_landmark'):
+            landmark_name = self.selected_landmark
+            self.logic.completeLandmark(landmark_name, "")
+            
+            # Lock the landmark
+            self.logic.lockUnlockLandmark(landmark_name, lock=True)
+            
+            # Update UI
+            self.updateActionButtons(landmark_name)
             self.updateLandmarkProgressList()
 
     def onResetLandmark(self):
-        if self.current_landmark_active:
-            landmark_name = getattr(self, 'selected_landmark', 'Left Coronary Cusp Nadir')
+        if hasattr(self, 'selected_landmark'):
+            landmark_name = self.selected_landmark
             if landmark_name == "Annulus Contour (Spline)":
                 self.logic.resetSpline()
             else:
                 self.logic.resetCurrentLandmark()
             
-            self.onStartStopLandmark()  # Stop current landmark
+            # Update UI
+            self.updateActionButtons(landmark_name)
+            self.updateLandmarkProgressList()
 
     def updateTimerDisplay(self):
         if self.current_landmark_active and hasattr(self.logic, 'landmark_start_time'):
@@ -298,22 +244,28 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
     def updateLandmarkProgressList(self):
         self.landmarkProgressList.clear()
         if hasattr(self.logic, 'current_log_manager') and self.logic.current_log_manager:
-            # Get landmark progress from logic
             progress = self.logic.getLandmarkProgress()
             for landmark, status in progress.items():
                 item_text = f"{landmark}: {status}"
                 item = qt.QListWidgetItem(item_text)
                 font = item.font()
-                font.setPointSize(12)  # Increase from default
+                font.setPointSize(12)
+                
+                # Highlight if this is the currently selected landmark
+                if hasattr(self, 'selected_landmark') and self.selected_landmark == landmark:
+                    item.setBackground(qt.QColor(255, 235, 59, 100))  # Light yellow background
+                    font.setBold(True)
+                
                 item.setFont(font)
                 self.landmarkProgressList.addItem(item)
+        
         self.landmarkProgressList.setStyleSheet("QListWidget { font-size: 12pt; }")
 
     def enableLandmarkSection(self, case_name):
         """Enable landmark section when a case is loaded"""
         self.landmarkStatusLabel.setText(f"Ready for annotation: {case_name}")
         self.landmarkStatusLabel.setStyleSheet("color: green; font-style: normal; font-weight: bold; font-size: 10pt;")
-        self.startStopButton.setEnabled(True)        
+        self.lockUnlockButton.setEnabled(False)
         self.updateLandmarkProgressList()
 
     def onLandmarkSelectionChanged(self):
@@ -368,8 +320,14 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
                 # Enable placement mode for new landmark
                 placeWidget = slicer.qSlicerMarkupsPlaceWidget()
                 placeWidget.setMRMLScene(slicer.mrmlScene)
+                originalName = self.logic.markups_node.GetName()
+                self.logic.markups_node.SetName(f"{landmark_name} ")
                 placeWidget.setCurrentNode(self.logic.markups_node)
                 placeWidget.setPlaceModeEnabled(True)
+
+                # Restore name after short delay (after placement will start)
+                qt.QTimer.singleShot(500, lambda: self.logic.markups_node.SetName(originalName))
+
                 self.logic.setupActivityObserver("landmark")
 
     def onSaveCaseClicked(self):
@@ -391,13 +349,84 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
     def onLandmarkItemClicked(self, item):
         """Handle clicking on a landmark in the progress list"""
         item_text = item.text()
-        # Extract landmark name (everything before the colon)
         landmark_name = item_text.split(":")[0].strip()
         
-        # Store the selected landmark for the start/stop functionality
+        # Auto-lock previous landmark if it was unlocked
+        if hasattr(self, 'selected_landmark') and self.selected_landmark != landmark_name:
+            if self.logic.landmarkExists(self.selected_landmark) and not self.logic.isLandmarkLocked(self.selected_landmark):
+                self.logic.lockUnlockLandmark(self.selected_landmark, lock=True)
+                self._logActivity("landmark", self.selected_landmark, "Auto-locked")
+        # Clear previous current_landmark
+        self.logic.current_landmark = None
+        
+        # Store selected landmark
         self.selected_landmark = landmark_name
         
+        # Visual feedback for selection
+        self.landmarkProgressList.setCurrentItem(item)
+        
+        # Enable placement mode if landmark exists and is unlocked, or doesn't exist yet
+        exists = self.logic.landmarkExists(landmark_name)
+        if not exists or (exists and not self.logic.isLandmarkLocked(landmark_name)):
+            # Set current landmark in logic for proper labeling
+            self.logic.current_landmark = landmark_name
+            self.enableLandmarkPlacement(landmark_name)
+            action = "Edit" if exists else "Place"
+            self._logActivity("landmark", landmark_name, f"Started {action.lower()}ing")
+        
+        # Update action buttons
+        self.updateActionButtons(landmark_name)
+        self.updateLandmarkProgressList()  # Refresh to show auto-lock changes
+        
         print(f"Selected landmark: {landmark_name}")
+
+    def updateActionButtons(self, landmark_name):
+        """Update button states based on selected landmark"""
+        if not landmark_name:
+            self.lockUnlockButton.setEnabled(False)
+            return
+        
+        # Check if landmark exists
+        exists = self.logic.landmarkExists(landmark_name)
+        
+        if exists:
+            is_locked = self.logic.isLandmarkLocked(landmark_name)
+            if is_locked:
+                self.lockUnlockButton.setText("Click to Unlock Landmark")
+                self.lockUnlockButton.setStyleSheet("QPushButton { background-color: #f44336; color: white; font-weight: bold; }")  # Red for locked
+            else:
+                self.lockUnlockButton.setText("Click to Lock Landmark")
+                self.lockUnlockButton.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }")  # Green for unlocked
+            self.lockUnlockButton.setEnabled(True)
+            self.resetLandmarkButton.setEnabled(not is_locked)
+        else:
+            self.lockUnlockButton.setText("-")
+            self.lockUnlockButton.setStyleSheet("QPushButton { background-color: #9E9E9E; color: white; font-weight: bold; }")  # Gray for disabled
+            self.lockUnlockButton.setEnabled(False)
+            self.resetLandmarkButton.setEnabled(False)
+
+    def onCaseListItemActivated(self, item):
+        """Handles double-click or Enter key on case list item"""
+        self.onSelectCase()
+
+    def onLockUnlockClicked(self):
+        """Toggle lock state of selected landmark"""
+        if not hasattr(self, 'selected_landmark'):
+            return
+        
+        landmark_name = self.selected_landmark
+        is_locked = self.logic.isLandmarkLocked(landmark_name)
+        
+        # Toggle lock state
+        self.logic.lockUnlockLandmark(landmark_name, lock=not is_locked)
+        
+        # Update UI
+        self.updateActionButtons(landmark_name)
+        self.updateLandmarkProgressList()
+        
+        # Log activity
+        action = "Locked" if not is_locked else "Unlocked"
+        self._logActivity("landmark", landmark_name, action)
 
 class CardiacAnnotatorLogic(ScriptedLoadableModuleLogic):
 
@@ -481,7 +510,7 @@ class CardiacAnnotatorLogic(ScriptedLoadableModuleLogic):
         pending_cases = in_progress + not_started
                 
         return pending_cases
-   
+
     def loadCase(self, case_name):
 
         # Check if current work needs saving before switching
@@ -500,6 +529,11 @@ class CardiacAnnotatorLogic(ScriptedLoadableModuleLogic):
         
         # Clear the scene when switching cases
         slicer.mrmlScene.Clear(0)
+
+        # Clear selected landmark when switching cases
+        if hasattr(self, 'widget_reference'):
+            if hasattr(self.widget_reference, 'selected_landmark'):
+                delattr(self.widget_reference, 'selected_landmark')
 
         # Close previous log if exists
         if hasattr(self, 'current_log_manager') and self.current_log_manager:
@@ -551,14 +585,11 @@ class CardiacAnnotatorLogic(ScriptedLoadableModuleLogic):
         self.current_case_name = case_name
         self.checkForIncompleteWork() # in case of a previous abrupt exit
 
-        # to change the button back to Start
+        # Reset button states
         if hasattr(self, 'widget_reference'):
-            self.widget_reference.current_landmark_active = False
-            self.widget_reference.startStopButton.setText("Start Landmark")
-            self.widget_reference.startStopButton.setStyleSheet("QPushButton { background-color: #4CAF50; color: black; font-weight: bold; }")
+            self.widget_reference.lockUnlockButton.setEnabled(False)
             self.widget_reference.markCompleteButton.setEnabled(False)
-            self.widget_reference.resetLandmarkButton.setEnabled(False)
-        
+            self.widget_reference.resetLandmarkButton.setEnabled(False)       
         
         self.widget_reference.saveCaseButton.show() # to show save case button
 
@@ -587,7 +618,7 @@ class CardiacAnnotatorLogic(ScriptedLoadableModuleLogic):
         # Add reset logic here
         if hasattr(self, 'current_log_manager') and self.current_log_manager:
             self.current_log_manager.write_entry(f"Reset landmark: {self.current_landmark}")
-   
+
     def getLandmarkProgress(self):
         """Return progress dictionary with compact status for each landmark type"""
         landmark_types = [
@@ -659,17 +690,22 @@ class CardiacAnnotatorLogic(ScriptedLoadableModuleLogic):
             pos = [0, 0, 0]
             self.markups_node.GetNthControlPointPosition(point_index, pos)
             
-            # Set the point label to match the landmark name
+            # Set the point label to match the landmark name            
             if activity_type == "landmark":
-                activity_name = getattr(self, f'current_{activity_type}', 'Unknown')
+                activity_name = getattr(self, 'current_landmark', 'Unknown')
                 self.markups_node.SetNthControlPointLabel(point_index, activity_name)
             
             # Log the placement
             if hasattr(self, 'current_log_manager') and self.current_log_manager:
-                activity_name = getattr(self, f'current_{activity_type}', 'Unknown')
+                activity_name = getattr(self, 'current_landmark', 'Unknown')
                 self.current_log_manager.write_entry(
-                    f"Placed {activity_type}: {activity_name} at position ({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f})"
-                )          
+                    f"Placed {activity_type}: {activity_name}"
+                )     
+                            
+            # Update UI after placement
+            if hasattr(self, 'widget_reference'):
+                self.widget_reference.updateActionButtons(activity_name)
+                self.widget_reference.updateLandmarkProgressList()     
 
     def lockUnlockLandmark(self, landmark_name, lock=True):
         """Lock or unlock points of the current landmark type"""
@@ -787,6 +823,7 @@ class CardiacAnnotatorLogic(ScriptedLoadableModuleLogic):
             # Update progress display
             if hasattr(self, 'widget_reference'):
                 self.widget_reference.updateLandmarkProgressList()
+                self.widget_reference.updateActionButtons("Annulus Contour (Spline)")
 
     def lockUnlockSpline(self, lock=True):
         """Lock or unlock the spline node"""
@@ -804,6 +841,37 @@ class CardiacAnnotatorLogic(ScriptedLoadableModuleLogic):
             # Log the reset
             if hasattr(self, 'current_log_manager') and self.current_log_manager:
                 self.current_log_manager.write_entry("Reset Annulus Contour (Spline)")
+
+    def landmarkExists(self, landmark_name):
+        """Check if a landmark has been placed"""
+        if landmark_name == "Annulus Contour (Spline)":
+            return hasattr(self, 'spline_node') and self.spline_node and self.spline_node.GetNumberOfControlPoints() > 0
+        else:
+            if hasattr(self, 'markups_node') and self.markups_node:
+                num_points = self.markups_node.GetNumberOfControlPoints()
+                for i in range(num_points):
+                    point_label = self.markups_node.GetNthControlPointLabel(i)
+                    if landmark_name in point_label:
+                        return True
+            return False
+
+    def isLandmarkLocked(self, landmark_name):
+        """Check if a landmark is locked"""
+        if landmark_name == "Annulus Contour (Spline)":
+            if hasattr(self, 'spline_node') and self.spline_node:
+                num_points = self.spline_node.GetNumberOfControlPoints()
+                if num_points > 0:
+                    return self.spline_node.GetNthControlPointLocked(0)  # Check first point
+            return False
+        else:
+            if hasattr(self, 'markups_node') and self.markups_node:
+                num_points = self.markups_node.GetNumberOfControlPoints()
+                for i in range(num_points):
+                    point_label = self.markups_node.GetNthControlPointLabel(i)
+                    if landmark_name in point_label:
+                        return self.markups_node.GetNthControlPointLocked(i)
+            return False
+
 
     class LogManager:
 
@@ -865,5 +933,6 @@ class CardiacAnnotatorLogic(ScriptedLoadableModuleLogic):
 
 
 class CardiacAnnotatorTest(ScriptedLoadableModuleTest):
-  def runTest(self):
-    pass
+
+    def runTest(self):
+        pass
