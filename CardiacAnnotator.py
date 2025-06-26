@@ -92,12 +92,6 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
         self.landmarkStatusLabel.setStyleSheet("color: gray; font-style: italic;")
         landmarksLayout.addWidget(self.landmarkStatusLabel)
 
-        # Current landmark section
-        currentLandmarkFrame = qt.QFrame()
-        currentLandmarkFrame.setStyleSheet("QFrame { border: 1px solid #cccccc; border-radius: 5px; padding: 5px; }")
-        landmarksLayout.addWidget(currentLandmarkFrame)
-        currentLandmarkLayout = qt.QVBoxLayout(currentLandmarkFrame)
-
         # Landmark selection
         landmarkSelectionLayout = qt.QHBoxLayout()
 
@@ -181,9 +175,7 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
                 
             self.caseListWidget.addItem(display_text)
         
-        # self.caseListWidget.show()
-        # self.selectCaseButton.show()
-        # self.activeCaseLabel.show() 
+        self.activeCaseLabel.show() 
         self.caseListCollapsible.show()
 
     def onSelectCase(self):
@@ -236,7 +228,6 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
                 pass
             
             setattr(self, status_attr, True)
-            label_widget.setText(f"Current {activity_type.title()}: {activity_name}")
             button_widget.setText(f"Stop {activity_type.title()}")
             button_widget.setStyleSheet("QPushButton { background-color: #f44336; color: #000000; font-weight: bold; }")
             complete_button.setEnabled(True)
@@ -260,7 +251,6 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
                 self.logic.lockUnlockLandmark(activity_name, lock=True)   # lock
             
             setattr(self, status_attr, False)
-            label_widget.setText(f"Current {activity_type.title()}: None")
             button_widget.setText(f"Start {activity_type.title()}")
             button_widget.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }")
             complete_button.setEnabled(False)
@@ -322,7 +312,7 @@ class CardiacAnnotatorWidget(ScriptedLoadableModuleWidget):
     def enableLandmarkSection(self, case_name):
         """Enable landmark section when a case is loaded"""
         self.landmarkStatusLabel.setText(f"Ready for annotation: {case_name}")
-        self.landmarkStatusLabel.setStyleSheet("color: green; font-style: normal; font-weight: bold;")
+        self.landmarkStatusLabel.setStyleSheet("color: green; font-style: normal; font-weight: bold; font-size: 10pt;")
         self.startStopButton.setEnabled(True)        
         self.updateLandmarkProgressList()
 
@@ -564,7 +554,6 @@ class CardiacAnnotatorLogic(ScriptedLoadableModuleLogic):
         # to change the button back to Start
         if hasattr(self, 'widget_reference'):
             self.widget_reference.current_landmark_active = False
-            self.widget_reference.currentLandmarkLabel.setText("Current Landmark: None")
             self.widget_reference.startStopButton.setText("Start Landmark")
             self.widget_reference.startStopButton.setStyleSheet("QPushButton { background-color: #4CAF50; color: black; font-weight: bold; }")
             self.widget_reference.markCompleteButton.setEnabled(False)
